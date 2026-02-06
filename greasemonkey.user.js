@@ -19,7 +19,7 @@
 
 {
 	const s = document.createElement("script");
-	s.src = 'https://rawgit.com/liskin/strava-map-switcher/master/load.js';
+	s.src = 'https://cdn.jsdelivr.net/gh/liskin/strava-map-switcher@master/load.js';
 	s.type = 'text/javascript';
 	document.body.appendChild(s);
 }

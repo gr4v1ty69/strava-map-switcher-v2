@@ -44,11 +44,38 @@ var layerNames =
 Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.name);
 
 /* --------------------------------------------------------------------- */
-/* Activity pages: global hook for the new <select>                      */
+/* Hook CustomControlView to remember last instance                      */
+/* --------------------------------------------------------------------- */
+
+(function hookCustomControlView() {
+	if (!Strava || !Strava.Maps || !Strava.Maps.Mapbox || !Strava.Maps.Mapbox.CustomControlView) return;
+
+	const Orig = Strava.Maps.Mapbox.CustomControlView;
+	if (Orig.__mapSwitcherWrapped) return; // only once
+
+	let lastInstance = null;
+
+	function WrappedCustomControlView() {
+		const inst = new Orig(...arguments);
+		lastInstance = inst;
+		return inst;
+	}
+	WrappedCustomControlView.prototype = Orig.prototype;
+	WrappedCustomControlView.__mapSwitcherWrapped = true;
+
+	Strava.Maps.Mapbox.CustomControlView = WrappedCustomControlView;
+
+	// expose helper
+	Strava.Maps.Mapbox.getLastCustomControlView = function () {
+		return lastInstance;
+	};
+})();
+
+/* --------------------------------------------------------------------- */
+/* Activity pages: tie the <select> to the map via CustomControlView     */
 /* --------------------------------------------------------------------- */
 
 (function () {
-	// Only run on activity pages
 	if (!/^\/activities\/\d+/.test(location.pathname)) return;
 
 	MapSwitcher.wait(function () {
@@ -69,67 +96,66 @@ Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.
 			"googlehybrid": "4",
 		};
 
-		// Find the Strava Leaflet map wrapper used on this activity
-		let mapWrapper = null;
-		for (const v of Object.values(window)) {
-			if (v && typeof v.setLayer === "function" && v.layers) {
-				mapWrapper = v;
-				break;
+		// Wait for a CustomControlView instance so we can get map()
+		MapSwitcher.wait(function () {
+			const getter = Strava?.Maps?.Mapbox?.getLastCustomControlView;
+			const inst = typeof getter === "function" ? getter() : null;
+			return inst || null;
+		}).then(function (controlView) {
+			console.log("MapSwitcher (activity): CustomControlView instance found", controlView);
+			const map = controlView.map && controlView.map();
+			if (!map || typeof map.setLayer !== "function") {
+				console.log("MapSwitcher (activity): map wrapper missing or no setLayer");
+				return;
 			}
-		}
-		if (!mapWrapper) {
-			console.log("MapSwitcher (activity): no map wrapper with setLayer/layers found on window");
-			return;
-		}
-		console.log("MapSwitcher (activity): map wrapper found", mapWrapper);
+			console.log("MapSwitcher (activity): map wrapper", map);
 
-		// Inject our layers and Pegman once
-		addLayers(mapWrapper);
-		if (mapWrapper.instance) {
-			addPegman(mapWrapper.instance);
-		}
-		console.log("MapSwitcher (activity): map.layers keys", Object.keys(mapWrapper.layers));
+			// inject our layers + Pegman once
+			addLayers(map);
+			if (map.instance) addPegman(map.instance);
+			console.log("MapSwitcher (activity): map.layers keys", Object.keys(map.layers || {}));
 
-		// Append our custom layers as options
-		Object.entries(AdditionalMapLayers).forEach(([type, l]) => {
-			mapTypeSelect.append(
-				jQuery('<option>')
-					.val(type)
-					.text(l.name)
-			);
-		});
+			// append custom layer options
+			Object.entries(AdditionalMapLayers).forEach(([type, l]) => {
+				mapTypeSelect.append(
+					jQuery('<option>')
+						.val(type)
+						.text(l.name)
+				);
+			});
+			["googlesatellite", "googleroadmap", "googlehybrid", "googleterrain"].forEach(type => {
+				mapTypeSelect.append(
+					jQuery('<option>')
+						.val(type)
+						.text(layerNames[type])
+				);
+			});
+			console.log("MapSwitcher (activity): options after append", mapTypeSelect.html());
 
-		["googlesatellite", "googleroadmap", "googlehybrid", "googleterrain"].forEach(type => {
-			mapTypeSelect.append(
-				jQuery('<option>')
-					.val(type)
-					.text(layerNames[type])
-			);
-		});
+			// bind select → map.setLayer
+			mapTypeSelect.on('change.mapswitcher', function () {
+				const val = jQuery(this).val();
+				const layerId = valueToLayer[val] || val;
+				if (!layerId) return;
 
-		console.log("MapSwitcher (activity): options after append:", mapTypeSelect.html());
+				console.log("MapSwitcher (activity): setLayer via select", layerId);
+				localStorage.stravaMapSwitcherPreferred = layerId;
+				map.setLayer(layerId);
+			});
 
-		// Bind <select> directly to mapWrapper.setLayer(...)
-		mapTypeSelect.on('change.mapswitcher', function () {
-			const val = jQuery(this).val();
-			const layerId = valueToLayer[val] || val;
-			if (!layerId) return;
-
-			console.log("MapSwitcher (activity): setLayer via select", layerId);
-			localStorage.stravaMapSwitcherPreferred = layerId;
-			mapWrapper.setLayer(layerId);
-		});
-
-		// Apply stored preferred map if available and option exists
-		const preferred = localStorage.stravaMapSwitcherPreferred;
-		if (preferred) {
-			const selectValue = layerToValue[preferred] || preferred;
-			if (mapTypeSelect.find(`option[value="${selectValue}"]`).length) {
-				console.log("MapSwitcher (activity): selecting preferred map", preferred, "as", selectValue);
-				mapTypeSelect.val(selectValue).trigger('change');
+			// restore preference
+			const preferred = localStorage.stravaMapSwitcherPreferred;
+			if (preferred) {
+				const selectValue = layerToValue[preferred] || preferred;
+				if (mapTypeSelect.find(`option[value="${selectValue}"]`).length) {
+					console.log("MapSwitcher (activity): selecting preferred", preferred, "as", selectValue);
+					mapTypeSelect.val(selectValue).trigger('change');
+				}
 			}
-		}
+		}, function (err) {
+			console.log("MapSwitcher (activity): wait CustomControlView failed", err);
+		});
 	}, function (err) {
-		console.log("MapSwitcher (activity): wait() failed", err);
+		console.log("MapSwitcher (activity): wait select failed", err);
 	});
 })();

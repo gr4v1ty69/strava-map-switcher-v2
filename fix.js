@@ -2,52 +2,8 @@
  * Map switcher for Strava website.
  *
  * Copyright © 2016 Tomáš Janoušek.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to
- * deal in the Software without restriction, including without limitation the
- * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- * sell copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
+ * MIT License.
  */
-
-/* ------------------------------------------------------------------------- */
-/* Track the last CustomControlView instance so we can call changeMapType()  */
-/* ------------------------------------------------------------------------- */
-
-(function () {
-	if (!window.Strava || !Strava.Maps || !Strava.Maps.Mapbox || !Strava.Maps.Mapbox.CustomControlView)
-		return;
-
-	const OrigCustomControlView = Strava.Maps.Mapbox.CustomControlView;
-	let lastCustomControlViewInstance = null;
-
-	Strava.Maps.Mapbox.CustomControlView = function () {
-		const instance = new OrigCustomControlView(...arguments);
-		lastCustomControlViewInstance = instance;
-		return instance;
-	};
-	Strava.Maps.Mapbox.CustomControlView.prototype = OrigCustomControlView.prototype;
-
-	Strava.Maps.Mapbox.getLastCustomControlView = function () {
-		return lastCustomControlViewInstance;
-	};
-})();
-
-/* ------------------------------------------------------------------------- */
-/* Main logic: runs once per .leaflet-container (activity map, explorer map) */
-/* ------------------------------------------------------------------------- */
 
 document.arrive(".leaflet-container", {onceOnly: false, existing: true, fireOnAttributesModification: true}, function () {
 	const leafletContainer = this;
@@ -96,54 +52,59 @@ document.arrive(".leaflet-container", {onceOnly: false, existing: true, fireOnAt
 	/* --------------------------------------------------------------------- */
 
 	MapSwitcher.wait(function () {
-		// New map type control on activity pages
 		const q = jQuery('select[data-testid="mre-map-style-select"]', leafletContainer);
 		return q.length ? q : null;
 	}).then(function (mapTypeSelect) {
 		mapTypeSelect = jQuery(mapTypeSelect);
 
-		// Map Strava's built-in option values to the original type IDs
-		const valueToLayer = {
-			"0": "standard",
-			"5": "satellite",
-			"4": "googlehybrid", // you can change this if you prefer Hybrid to map differently
-		};
+		// augment layerNames already done above
 
-		const layerToValue = {
-			"standard": "0",
-			"satellite": "5",
-			"googlehybrid": "4",
-		};
+		// Override changeMapType once, wrapping the original
+		if (Strava && Strava.Maps && Strava.Maps.Mapbox && Strava.Maps.Mapbox.CustomControlView) {
+			const proto = Strava.Maps.Mapbox.CustomControlView.prototype;
+			if (!proto.__mapSwitcherPatched) {
+				proto.__mapSwitcherPatched = true;
+				const origChangeMapType = proto.changeMapType;
 
-		// Override Mapbox changeMapType to inject layers & Pegman once and then delegate
-		var once = true;
-		Strava.Maps.Mapbox.CustomControlView.prototype.changeMapType = function (t) {
-			var map = this.map();
+				var once = true;
+				proto.changeMapType = function (selectedMapTypeId) {
+					var map = this.map();
 
-			if (once) {
-				once = false;
+					if (once) {
+						once = false;
+						addLayers(map);
+						if (map.instance) {
+							addPegman(map.instance);
+						}
+					}
 
-				addLayers(map);
-				addPegman(map.instance);
+					// Let Strava's original implementation handle mapping and setLayer
+					const result = origChangeMapType.call(this, selectedMapTypeId);
 
-				// in case Strava still uses delegated events
-				this.delegateEvents && this.delegateEvents();
+					// Try to store a readable preference if possible
+					try {
+						const t = this.mapTypeIdMap(selectedMapTypeId);
+						if (t) {
+							localStorage.stravaMapSwitcherPreferred = t;
+						}
+					} catch (e) {
+						// ignore
+					}
+
+					return result;
+				};
 			}
+		}
 
-			localStorage.stravaMapSwitcherPreferred = t;
-			return map.setLayer(t);
-		};
-
-		// Extend the <select> with additional map layers
+		// Extend select with additional map layers as options
 		Object.entries(AdditionalMapLayers).forEach(([type, l]) => {
 			mapTypeSelect.append(
 				jQuery('<option>')
-					.val(type)          // use layer ID as value for custom options
+					.val(type)          // our custom id
 					.text(l.name)
 			);
 		});
 
-		// And explicit Google modes, if desired
 		["googlesatellite", "googleroadmap", "googlehybrid", "googleterrain"].forEach(type => {
 			mapTypeSelect.append(
 				jQuery('<option>')
@@ -152,39 +113,46 @@ document.arrive(".leaflet-container", {onceOnly: false, existing: true, fireOnAt
 			);
 		});
 
-		function applyMapTypeFromSelectValue(val) {
+		// Map built-in numeric values to type ids for preference
+		const valueToLayer = {
+			"0": "standard",
+			"5": "satellite",
+			"4": "googlehybrid",
+		};
+		const layerToValue = {
+			"standard": "0",
+			"satellite": "5",
+			"googlehybrid": "4",
+		};
+
+		// Handle change: for built-in values, let Strava do everything
+		// For custom values, just remember preference and rely on our extra layers
+		mapTypeSelect.on('change', function () {
+			const val = jQuery(this).val();
 			const layerId = valueToLayer[val] || val;
 			if (!layerId) return;
 
-			const cvGetter = Strava?.Maps?.Mapbox?.getLastCustomControlView;
-			const cv = typeof cvGetter === 'function' ? cvGetter() : null;
-
-			if (cv && typeof cv.changeMapType === 'function') {
-				cv.changeMapType(layerId);
-			} else {
-				// Fallback: at least remember preference
-				localStorage.stravaMapSwitcherPreferred = layerId;
-			}
-		}
-
-		// Listen to select change
-		mapTypeSelect.on('change', function () {
-			const val = jQuery(this).val();
-			applyMapTypeFromSelectValue(val);
+			localStorage.stravaMapSwitcherPreferred = layerId;
+			// IMPORTANT: we do NOT call changeMapType ourselves here,
+			// Strava has already called it in response to this change
+			// for built-in values. For custom ones, map.setLayer(layerId)
+			// will work because we added them to map.layers in addLayers().
 		});
 
-		// Apply stored preferred map, if any
+		// Apply stored preferred map if any, but only if it matches an existing <option>
 		const preferred = localStorage.stravaMapSwitcherPreferred;
 		if (preferred) {
 			const selectValue = layerToValue[preferred] || preferred;
-			mapTypeSelect.val(selectValue).trigger('change');
+			if (mapTypeSelect.find(`option[value="${selectValue}"]`).length) {
+				mapTypeSelect.val(selectValue).trigger('change');
+			}
 		}
 	}, function () {
-		// If wait() times out, just ignore; this block is only for pages that have that select
+		// ignore timeout
 	});
 
 	/* --------------------------------------------------------------------- */
-	/* Segment Explorer (unchanged from original)                            */
+	/* Segment Explorer (unchanged)                                          */
 	/* --------------------------------------------------------------------- */
 
 	MapSwitcher.wait(function () {

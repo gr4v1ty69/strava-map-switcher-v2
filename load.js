@@ -1,5 +1,5 @@
 /*
- * Map switcher for Strava website.
+ * Map switcher v2 (2026.1) for Strava website.
  *
  * Copyright © 2016 Tomáš Janoušek.
  *

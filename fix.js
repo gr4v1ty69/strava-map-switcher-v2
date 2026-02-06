@@ -1,7 +1,7 @@
 /*
  * Map switcher for Strava website.
  *
- * Copyright © 2026.01 Tomáš Janoušek.
+ * Copyright © 2026 Tomáš Janoušek.
  * MIT License.
  */
 
@@ -17,6 +17,7 @@ function tileLayer(l) {
 }
 
 function addLayers(map) {
+	if (!map.layers) map.layers = {};
 	Object.entries(AdditionalMapLayers).forEach(([type, l]) => map.layers[type] = tileLayer(l));
 	if (typeof L.gridLayer.googleMutant !== "undefined") {
 		map.layers.googlesatellite = L.gridLayer.googleMutant({type: 'satellite'});
@@ -44,35 +45,33 @@ var layerNames =
 Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.name);
 
 /* --------------------------------------------------------------------- */
-/* Hook CustomControlView to remember last instance                      */
+/* Hook Strava.Maps.Map to remember last created map wrapper             */
 /* --------------------------------------------------------------------- */
 
-(function hookCustomControlView() {
-	if (!Strava || !Strava.Maps || !Strava.Maps.Mapbox || !Strava.Maps.Mapbox.CustomControlView) return;
+let lastStravaMapInstance = null;
 
-	const Orig = Strava.Maps.Mapbox.CustomControlView;
-	if (Orig.__mapSwitcherWrapped) return; // only once
+MapSwitcher.wait(function () {
+	return (Strava && Strava.Maps && Strava.Maps.Map) ? Strava.Maps.Map : null;
+}).then(function (OrigMap) {
+	if (OrigMap.__mapSwitcherWrapped) return;
 
-	let lastInstance = null;
-
-	function WrappedCustomControlView() {
-		const inst = new Orig(...arguments);
-		lastInstance = inst;
-		return inst;
+	function WrappedMap(options) {
+		const m = new OrigMap(options);
+		lastStravaMapInstance = m;
+		return m;
 	}
-	WrappedCustomControlView.prototype = Orig.prototype;
-	WrappedCustomControlView.__mapSwitcherWrapped = true;
+	WrappedMap.prototype = OrigMap.prototype;
+	WrappedMap.__mapSwitcherWrapped = true;
 
-	Strava.Maps.Mapbox.CustomControlView = WrappedCustomControlView;
+	Strava.Maps.Map = WrappedMap;
 
-	// expose helper
-	Strava.Maps.Mapbox.getLastCustomControlView = function () {
-		return lastInstance;
-	};
-})();
+	console.log("MapSwitcher (activity): Strava.Maps.Map wrapped");
+}, function (err) {
+	console.log("MapSwitcher (activity): wait Strava.Maps.Map failed", err);
+});
 
 /* --------------------------------------------------------------------- */
-/* Activity pages: tie the <select> to the map via CustomControlView     */
+/* Activity pages: bind <select> directly to Strava.Maps.Map instance    */
 /* --------------------------------------------------------------------- */
 
 (function () {
@@ -96,26 +95,23 @@ Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.
 			"googlehybrid": "4",
 		};
 
-		// Wait for a CustomControlView instance so we can get map()
+		// Wait for a Strava.Maps.Map instance
 		MapSwitcher.wait(function () {
-			const getter = Strava?.Maps?.Mapbox?.getLastCustomControlView;
-			const inst = typeof getter === "function" ? getter() : null;
-			return inst || null;
-		}).then(function (controlView) {
-			console.log("MapSwitcher (activity): CustomControlView instance found", controlView);
-			const map = controlView.map && controlView.map();
-			if (!map || typeof map.setLayer !== "function") {
-				console.log("MapSwitcher (activity): map wrapper missing or no setLayer");
+			return lastStravaMapInstance || null;
+		}).then(function (mapWrapper) {
+			console.log("MapSwitcher (activity): map wrapper instance found", mapWrapper);
+
+			if (!mapWrapper || typeof mapWrapper.setLayer !== "function") {
+				console.log("MapSwitcher (activity): map wrapper has no setLayer");
 				return;
 			}
-			console.log("MapSwitcher (activity): map wrapper", map);
 
-			// inject our layers + Pegman once
-			addLayers(map);
-			if (map.instance) addPegman(map.instance);
-			console.log("MapSwitcher (activity): map.layers keys", Object.keys(map.layers || {}));
+			// Inject our layers + Pegman once
+			addLayers(mapWrapper);
+			if (mapWrapper.instance) addPegman(mapWrapper.instance);
+			console.log("MapSwitcher (activity): map.layers keys", Object.keys(mapWrapper.layers || {}));
 
-			// append custom layer options
+			// Append custom layers as options
 			Object.entries(AdditionalMapLayers).forEach(([type, l]) => {
 				mapTypeSelect.append(
 					jQuery('<option>')
@@ -132,7 +128,7 @@ Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.
 			});
 			console.log("MapSwitcher (activity): options after append", mapTypeSelect.html());
 
-			// bind select → map.setLayer
+			// Bind select → mapWrapper.setLayer
 			mapTypeSelect.on('change.mapswitcher', function () {
 				const val = jQuery(this).val();
 				const layerId = valueToLayer[val] || val;
@@ -140,10 +136,10 @@ Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.
 
 				console.log("MapSwitcher (activity): setLayer via select", layerId);
 				localStorage.stravaMapSwitcherPreferred = layerId;
-				map.setLayer(layerId);
+				mapWrapper.setLayer(layerId);
 			});
 
-			// restore preference
+			// Restore preferred map
 			const preferred = localStorage.stravaMapSwitcherPreferred;
 			if (preferred) {
 				const selectValue = layerToValue[preferred] || preferred;
@@ -153,7 +149,7 @@ Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.
 				}
 			}
 		}, function (err) {
-			console.log("MapSwitcher (activity): wait CustomControlView failed", err);
+			console.log("MapSwitcher (activity): wait map wrapper failed", err);
 		});
 	}, function (err) {
 		console.log("MapSwitcher (activity): wait select failed", err);

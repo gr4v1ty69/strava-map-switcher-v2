@@ -5,6 +5,8 @@
  * MIT License.
  */
 
+console.log("MapSwitcher fix.js loaded");
+
 document.arrive(".leaflet-container", {onceOnly: false, existing: true, fireOnAttributesModification: true}, function () {
 	const leafletContainer = this;
 

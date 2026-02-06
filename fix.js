@@ -5,7 +5,7 @@
  * MIT License.
  */
 
-console.log("MapSwitcher fix.js loaded");
+console.log("MapSwitcher fix.js loaded", location.href);
 
 document.arrive(".leaflet-container", {onceOnly: false, existing: true, fireOnAttributesModification: true}, function () {
 	const leafletContainer = this;
@@ -50,34 +50,111 @@ document.arrive(".leaflet-container", {onceOnly: false, existing: true, fireOnAt
 	Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.name);
 
 	/* --------------------------------------------------------------------- */
-/* Activity pages: minimal test block using the new <select>             */
-/* --------------------------------------------------------------------- */
+	/* Activity pages: new <select data-testid="mre-map-style-select"> UI    */
+	/* --------------------------------------------------------------------- */
 
-MapSwitcher.wait(function () {
-    // Try both scoped and global lookup, to be safe
-    const scoped = jQuery('select[data-testid="mre-map-style-select"]', leafletContainer);
-    if (scoped.length) return scoped;
-    const global = jQuery('select[data-testid="mre-map-style-select"]');
-    return global.length ? global : null;
-}).then(function (mapTypeSelect) {
-    console.log("MapSwitcher activity block: select found", mapTypeSelect);
-    mapTypeSelect = jQuery(mapTypeSelect);
-    console.log("Before append, options:", mapTypeSelect.html());
+	MapSwitcher.wait(function () {
+		// Try scoped first, then global as a fallback
+		const scoped = jQuery('select[data-testid="mre-map-style-select"]', leafletContainer);
+		if (scoped.length) return scoped;
+		const global = jQuery('select[data-testid="mre-map-style-select"]');
+		return global.length ? global : null;
+	}).then(function (mapTypeSelect) {
+		console.log("MapSwitcher: activity select found", mapTypeSelect);
+		mapTypeSelect = jQuery(mapTypeSelect);
 
-    // Just add one test option for now
-    mapTypeSelect.append(
-        jQuery('<option>')
-            .val('test-layer')
-            .text('Test Layer (MapSwitcher)')
-    );
+		// Map Strava's built-in numeric values to our type IDs
+		const valueToLayer = {
+			"0": "standard",
+			"5": "satellite",
+			"4": "googlehybrid", // you can change this mapping if you prefer
+		};
+		const layerToValue = {
+			"standard": "0",
+			"satellite": "5",
+			"googlehybrid": "4",
+		};
 
-    console.log("After append, options:", mapTypeSelect.html());
-}, function (err) {
-    console.log("MapSwitcher activity block: wait() failed", err);
-});
+		// Wrap CustomControlView.changeMapType so we inject layers once
+		if (Strava && Strava.Maps && Strava.Maps.Mapbox && Strava.Maps.Mapbox.CustomControlView) {
+			const proto = Strava.Maps.Mapbox.CustomControlView.prototype;
+			if (!proto.__mapSwitcherPatched) {
+				proto.__mapSwitcherPatched = true;
+				const origChangeMapType = proto.changeMapType;
+
+				var once = true;
+				proto.changeMapType = function (selectedMapTypeId) {
+					var map = this.map();
+
+					if (once) {
+						once = false;
+						console.log("MapSwitcher: first changeMapType, injecting layers/Pegman");
+						addLayers(map);
+						if (map.instance) {
+							addPegman(map.instance);
+						}
+					}
+
+					// Strava's original behavior
+					const result = origChangeMapType.call(this, selectedMapTypeId);
+
+					// Try to store a readable preference
+					try {
+						const t = this.mapTypeIdMap(selectedMapTypeId);
+						if (t) {
+							localStorage.stravaMapSwitcherPreferred = t;
+						}
+					} catch (e) {
+						// ignore
+					}
+
+					return result;
+				};
+			}
+		}
+
+		// Extend select with additional map layers as options
+		Object.entries(AdditionalMapLayers).forEach(([type, l]) => {
+			mapTypeSelect.append(
+				jQuery('<option>')
+					.val(type)          // use layer ID as value for custom options
+					.text(l.name)
+			);
+		});
+
+		["googlesatellite", "googleroadmap", "googlehybrid", "googleterrain"].forEach(type => {
+			mapTypeSelect.append(
+				jQuery('<option>')
+					.val(type)
+					.text(layerNames[type])
+			);
+		});
+
+		console.log("MapSwitcher: activity options after append:", mapTypeSelect.html());
+
+		// Remember preference on change; Strava will call changeMapType for built-ins
+		mapTypeSelect.on('change', function () {
+			const val = jQuery(this).val();
+			const layerId = valueToLayer[val] || val;
+			if (!layerId) return;
+			localStorage.stravaMapSwitcherPreferred = layerId;
+		});
+
+		// Apply stored preferred map if any and if we have an option for it
+		const preferred = localStorage.stravaMapSwitcherPreferred;
+		if (preferred) {
+			const selectValue = layerToValue[preferred] || preferred;
+			if (mapTypeSelect.find(`option[value="${selectValue}"]`).length) {
+				console.log("MapSwitcher: selecting preferred map", preferred, "as", selectValue);
+				mapTypeSelect.val(selectValue).trigger('change');
+			}
+		}
+	}, function (err) {
+		console.log("MapSwitcher: activity wait() failed", err);
+	});
 
 	/* --------------------------------------------------------------------- */
-	/* Segment Explorer (unchanged)                                          */
+	/* Segment Explorer (unchanged from original)                            */
 	/* --------------------------------------------------------------------- */
 
 	MapSwitcher.wait(function () {

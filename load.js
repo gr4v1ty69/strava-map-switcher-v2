@@ -1,5 +1,5 @@
 /*
- * Map switcher v2 (2026.001) for Strava website.
+ * Map switcher v2 (2026.00041) for Strava website.
  *
  * Copyright © 2016 Tomáš Janoušek.
  *

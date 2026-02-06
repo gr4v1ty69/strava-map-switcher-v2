@@ -1,7 +1,7 @@
 /*
  * Map switcher for Strava website.
  *
- * Copyright © 2016 Tomáš Janoušek.
+ * Copyright © 2026.1 Tomáš Janoušek.
  * MIT License.
  */
 

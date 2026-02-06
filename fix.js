@@ -52,67 +52,103 @@ document.arrive(".leaflet-container", {onceOnly: false, existing: true, fireOnAt
 		};
 	Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.name);
 
-	MapSwitcher.wait(function () {
-		const q = jQuery('#map-type-control .options', leafletContainer);
-		return q.length ? q : null;
-	}).then(function (activityOpts) {
-		Strava.Maps.CustomControlView.prototype.handleMapTypeSelector = function (t) {
-			const type = this.$$(t.target).data("map-type-id");
-			const selected = this.$("#selected-map");
-			selected.data("map-type-id", type);
-			selected.text(layerNames[type]);
-			return this.changeMapType(type);
-		};
+MapSwitcher.wait(function () {
+    // Look for the new <select> control inside this leaflet container
+    const q = jQuery('select[data-testid="mre-map-style-select"]', leafletContainer);
+    return q.length ? q : null;
+}).then(function (mapTypeSelect) {
+    mapTypeSelect = jQuery(mapTypeSelect); // ensure it's a jQuery object
 
-		var once = true;
-		Strava.Maps.Mapbox.CustomControlView.prototype.changeMapType = function(t){
-			var map = this.map();
+    // Map Strava's built-in option values to the original type IDs
+    const valueToLayer = {
+        "0": "standard",
+        "5": "satellite",
+        "4": "googlehybrid", // or "satellite", depending on how you want to treat Hybrid
+    };
 
-			if (once) {
-				once = false;
+    const layerToValue = {
+        "standard": "0",
+        "satellite": "5",
+        "googlehybrid": "4",
+    };
 
-				addLayers(map);
-				addPegman(map.instance);
+    // Keep the old Mapbox changeMapType override so we still inject layers once
+    var once = true;
+    Strava.Maps.Mapbox.CustomControlView.prototype.changeMapType = function (t) {
+        var map = this.map();
 
-				// this is needed for the right handleMapTypeSelector to be called
-				this.delegateEvents();
-			}
+        if (once) {
+            once = false;
 
-			localStorage.stravaMapSwitcherPreferred = t;
-			return map.setLayer(t);
-		};
+            addLayers(map);
+            addPegman(map.instance);
 
-		function button(t) {
-			return jQuery('<li>')
-				.append(jQuery('<a class="map-type-selector">')
-				.data("map-type-id", t)
-				.text(layerNames[t]));
-		}
+            // in case Strava still uses delegated events
+            this.delegateEvents && this.delegateEvents();
+        }
 
-		activityOpts.css({"max-height": "250px", "right": 0});
-		activityOpts.prepend(button("standard"));
+        localStorage.stravaMapSwitcherPreferred = t;
+        return map.setLayer(t);
+    };
 
-		if (MapSwitcherDonation)
-			activityOpts.append(jQuery('<li>').append(MapSwitcherDonation));
+    // OPTIONAL: extend the select with additional map layers
+    Object.entries(AdditionalMapLayers).forEach(([type, l]) => {
+        mapTypeSelect.append(
+            jQuery('<option>')
+                .val(type)          // use layer ID as value for custom options
+                .text(l.name)
+        );
+    });
 
-		Object.keys(AdditionalMapLayers).forEach(t => activityOpts.append(button(t)));
-		["googlesatellite", "googleroadmap", "googlehybrid", "googleterrain"].forEach(t => activityOpts.append(button(t)));
+    // And explicit Google modes, if desired
+    ["googlesatellite", "googleroadmap", "googlehybrid", "googleterrain"].forEach(type => {
+        mapTypeSelect.append(
+            jQuery('<option>')
+                .val(type)
+                .text(layerNames[type])
+        );
+    });
 
-		var preferredMap = localStorage.stravaMapSwitcherPreferred;
+    function applyMapTypeFromSelectValue(val) {
+        // built-in numeric values are mapped, custom ones use themselves
+        const layerId = valueToLayer[val] || val;
+        if (!layerId) return;
 
-		// make sure delegateEvents is run at least once
-		activityOpts.find(':first a').click();
-		activityOpts.removeClass("open-menu");
-		activityOpts.parent().removeClass("active");
+        // Call into Strava's control view, if present, or directly use the map wrapper
+        // Simplest: directly let Strava map wrapper handle the type ID via setLayer(t),
+        // which we wired above via changeMapType.
+        // We can mimic a "changeMapType" call by finding the current control view instance.
+        //
+        // However, if we don't know how to access that instance, we can rely on the fact
+        // that Strava's own code is already wired to this <select>. So:
+        //
+        // 1. Set a data attribute so Strava sees a known numeric option (for standard/satellite/hybrid).
+        // 2. For custom IDs, we go directly to the map via map.setLayer(layerId).
+        //
+        // For a first step, we keep it simple and handle all via localStorage + map.setLayer:
+        localStorage.stravaMapSwitcherPreferred = layerId;
 
-		// select preferred map type
-		if (preferredMap) {
-			var mapLinks = activityOpts.find('a.map-type-selector');
-			mapLinks.filter((_, e) => jQuery(e).data("map-type-id") === preferredMap).click();
-			activityOpts.removeClass("open-menu");
-			activityOpts.parent().removeClass("active");
-		}
-	});
+        // If we can get at the map wrapper via global Strava state:
+        if (Strava && Strava.Map && typeof Strava.Map.setLayer === "function") {
+            Strava.Map.setLayer(layerId);
+        }
+        // Otherwise, this consistently sets the preference, and the overridden
+        // changeMapType above will be invoked when Strava itself changes the map type.
+    }
+
+    // Listen to select change
+    mapTypeSelect.on('change', function () {
+        const val = jQuery(this).val();
+        applyMapTypeFromSelectValue(val);
+    });
+
+    // Apply stored preferred map, if any
+    const preferred = localStorage.stravaMapSwitcherPreferred;
+    if (preferred) {
+        const selectValue = layerToValue[preferred] || preferred;
+        mapTypeSelect.val(selectValue).trigger('change');
+    }
+});
 
 	MapSwitcher.wait(function () {
 		const q = jQuery('#segment-map-filters form');

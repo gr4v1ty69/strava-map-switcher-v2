@@ -3,12 +3,51 @@
  *
  * Copyright © 2016 Tomáš Janoušek.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
  */
+
+/* ------------------------------------------------------------------------- */
+/* Track the last CustomControlView instance so we can call changeMapType()  */
+/* ------------------------------------------------------------------------- */
+
+(function () {
+	if (!window.Strava || !Strava.Maps || !Strava.Maps.Mapbox || !Strava.Maps.Mapbox.CustomControlView)
+		return;
+
+	const OrigCustomControlView = Strava.Maps.Mapbox.CustomControlView;
+	let lastCustomControlViewInstance = null;
+
+	Strava.Maps.Mapbox.CustomControlView = function () {
+		const instance = new OrigCustomControlView(...arguments);
+		lastCustomControlViewInstance = instance;
+		return instance;
+	};
+	Strava.Maps.Mapbox.CustomControlView.prototype = OrigCustomControlView.prototype;
+
+	Strava.Maps.Mapbox.getLastCustomControlView = function () {
+		return lastCustomControlViewInstance;
+	};
+})();
+
+/* ------------------------------------------------------------------------- */
+/* Main logic: runs once per .leaflet-container (activity map, explorer map) */
+/* ------------------------------------------------------------------------- */
 
 document.arrive(".leaflet-container", {onceOnly: false, existing: true, fireOnAttributesModification: true}, function () {
 	const leafletContainer = this;
@@ -52,103 +91,101 @@ document.arrive(".leaflet-container", {onceOnly: false, existing: true, fireOnAt
 		};
 	Object.entries(AdditionalMapLayers).forEach(([type, l]) => layerNames[type] = l.name);
 
-MapSwitcher.wait(function () {
-    // Look for the new <select> control inside this leaflet container
-    const q = jQuery('select[data-testid="mre-map-style-select"]', leafletContainer);
-    return q.length ? q : null;
-}).then(function (mapTypeSelect) {
-    mapTypeSelect = jQuery(mapTypeSelect); // ensure it's a jQuery object
+	/* --------------------------------------------------------------------- */
+	/* Activity pages: new <select data-testid="mre-map-style-select"> UI    */
+	/* --------------------------------------------------------------------- */
 
-    // Map Strava's built-in option values to the original type IDs
-    const valueToLayer = {
-        "0": "standard",
-        "5": "satellite",
-        "4": "googlehybrid", // or "satellite", depending on how you want to treat Hybrid
-    };
+	MapSwitcher.wait(function () {
+		// New map type control on activity pages
+		const q = jQuery('select[data-testid="mre-map-style-select"]', leafletContainer);
+		return q.length ? q : null;
+	}).then(function (mapTypeSelect) {
+		mapTypeSelect = jQuery(mapTypeSelect);
 
-    const layerToValue = {
-        "standard": "0",
-        "satellite": "5",
-        "googlehybrid": "4",
-    };
+		// Map Strava's built-in option values to the original type IDs
+		const valueToLayer = {
+			"0": "standard",
+			"5": "satellite",
+			"4": "googlehybrid", // you can change this if you prefer Hybrid to map differently
+		};
 
-    // Keep the old Mapbox changeMapType override so we still inject layers once
-    var once = true;
-    Strava.Maps.Mapbox.CustomControlView.prototype.changeMapType = function (t) {
-        var map = this.map();
+		const layerToValue = {
+			"standard": "0",
+			"satellite": "5",
+			"googlehybrid": "4",
+		};
 
-        if (once) {
-            once = false;
+		// Override Mapbox changeMapType to inject layers & Pegman once and then delegate
+		var once = true;
+		Strava.Maps.Mapbox.CustomControlView.prototype.changeMapType = function (t) {
+			var map = this.map();
 
-            addLayers(map);
-            addPegman(map.instance);
+			if (once) {
+				once = false;
 
-            // in case Strava still uses delegated events
-            this.delegateEvents && this.delegateEvents();
-        }
+				addLayers(map);
+				addPegman(map.instance);
 
-        localStorage.stravaMapSwitcherPreferred = t;
-        return map.setLayer(t);
-    };
+				// in case Strava still uses delegated events
+				this.delegateEvents && this.delegateEvents();
+			}
 
-    // OPTIONAL: extend the select with additional map layers
-    Object.entries(AdditionalMapLayers).forEach(([type, l]) => {
-        mapTypeSelect.append(
-            jQuery('<option>')
-                .val(type)          // use layer ID as value for custom options
-                .text(l.name)
-        );
-    });
+			localStorage.stravaMapSwitcherPreferred = t;
+			return map.setLayer(t);
+		};
 
-    // And explicit Google modes, if desired
-    ["googlesatellite", "googleroadmap", "googlehybrid", "googleterrain"].forEach(type => {
-        mapTypeSelect.append(
-            jQuery('<option>')
-                .val(type)
-                .text(layerNames[type])
-        );
-    });
+		// Extend the <select> with additional map layers
+		Object.entries(AdditionalMapLayers).forEach(([type, l]) => {
+			mapTypeSelect.append(
+				jQuery('<option>')
+					.val(type)          // use layer ID as value for custom options
+					.text(l.name)
+			);
+		});
 
-    function applyMapTypeFromSelectValue(val) {
-        // built-in numeric values are mapped, custom ones use themselves
-        const layerId = valueToLayer[val] || val;
-        if (!layerId) return;
+		// And explicit Google modes, if desired
+		["googlesatellite", "googleroadmap", "googlehybrid", "googleterrain"].forEach(type => {
+			mapTypeSelect.append(
+				jQuery('<option>')
+					.val(type)
+					.text(layerNames[type])
+			);
+		});
 
-        // Call into Strava's control view, if present, or directly use the map wrapper
-        // Simplest: directly let Strava map wrapper handle the type ID via setLayer(t),
-        // which we wired above via changeMapType.
-        // We can mimic a "changeMapType" call by finding the current control view instance.
-        //
-        // However, if we don't know how to access that instance, we can rely on the fact
-        // that Strava's own code is already wired to this <select>. So:
-        //
-        // 1. Set a data attribute so Strava sees a known numeric option (for standard/satellite/hybrid).
-        // 2. For custom IDs, we go directly to the map via map.setLayer(layerId).
-        //
-        // For a first step, we keep it simple and handle all via localStorage + map.setLayer:
-        localStorage.stravaMapSwitcherPreferred = layerId;
+		function applyMapTypeFromSelectValue(val) {
+			const layerId = valueToLayer[val] || val;
+			if (!layerId) return;
 
-        // If we can get at the map wrapper via global Strava state:
-        if (Strava && Strava.Map && typeof Strava.Map.setLayer === "function") {
-            Strava.Map.setLayer(layerId);
-        }
-        // Otherwise, this consistently sets the preference, and the overridden
-        // changeMapType above will be invoked when Strava itself changes the map type.
-    }
+			const cvGetter = Strava?.Maps?.Mapbox?.getLastCustomControlView;
+			const cv = typeof cvGetter === 'function' ? cvGetter() : null;
 
-    // Listen to select change
-    mapTypeSelect.on('change', function () {
-        const val = jQuery(this).val();
-        applyMapTypeFromSelectValue(val);
-    });
+			if (cv && typeof cv.changeMapType === 'function') {
+				cv.changeMapType(layerId);
+			} else {
+				// Fallback: at least remember preference
+				localStorage.stravaMapSwitcherPreferred = layerId;
+			}
+		}
 
-    // Apply stored preferred map, if any
-    const preferred = localStorage.stravaMapSwitcherPreferred;
-    if (preferred) {
-        const selectValue = layerToValue[preferred] || preferred;
-        mapTypeSelect.val(selectValue).trigger('change');
-    }
-});
+		// Listen to select change
+		mapTypeSelect.on('change', function () {
+			const val = jQuery(this).val();
+			applyMapTypeFromSelectValue(val);
+		});
+
+		// Apply stored preferred map, if any
+		const preferred = localStorage.stravaMapSwitcherPreferred;
+		if (preferred) {
+			const selectValue = layerToValue[preferred] || preferred;
+			mapTypeSelect.val(selectValue).trigger('change');
+		}
+	}, function () {
+		// If wait() times out, just ignore; this block is only for pages that have that select
+	});
+
+	/* --------------------------------------------------------------------- */
+	/* Segment Explorer (unchanged from original)                            */
+	/* --------------------------------------------------------------------- */
 
 	MapSwitcher.wait(function () {
 		const q = jQuery('#segment-map-filters form');
